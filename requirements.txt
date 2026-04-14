@@ -1,0 +1,5 @@
+pytz
+alpaca-trade-api
+datetime
+yfinance
+dotenv
