@@ -9,7 +9,7 @@ RUN_HOUR = 9
 RUN_MINUTE = 25
 
 # ================= TIME LOGIC =================
-def get_next_run_time():
+def get_next_run_time() -> datetime:
     """Compute next run time (today or tomorrow at target time)."""
     now = datetime.now(TIMEZONE)
 
@@ -25,7 +25,7 @@ def get_next_run_time():
 
     return target
 
-def format_timedelta(td):
+def format_timedelta(td: timedelta) -> str:
     """Format timedelta nicely."""
     total_seconds = int(td.total_seconds())
     hours = total_seconds // 3600

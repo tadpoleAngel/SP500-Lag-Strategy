@@ -1,3 +1,4 @@
+from dis import Positions
 import alpaca_trade_api as tradeapi
 import yfinance as yf
 from datetime import datetime, timedelta
@@ -21,7 +22,7 @@ TIMEZONE = "US/Eastern"
 api = tradeapi.REST(API_KEY, API_SECRET, BASE_URL, api_version='v2')
 
 # ================= DATA MODULE =================
-def get_sp500_signal():
+def get_sp500_signal() -> int:
     """Returns +1 (bullish) or -1 (bearish) based on yesterday's S&P move."""
     data = yf.download(SP500_TICKER, period="3d", interval="1d")
 
@@ -36,7 +37,7 @@ def get_sp500_signal():
     return 1 if ret > 0 else -1
 
 # ================= POSITION MODULE =================
-def get_current_positions():
+def get_current_positions() -> dict[str, float]:
     """Returns dict of current positions."""
     positions = {}
     api_response = {}
@@ -47,12 +48,12 @@ def get_current_positions():
         print(f"Error fetching positions: {e}")
         return positions
     
-    for pos in api.list_positions():
+    for pos in api_response:
         positions[pos.symbol] = float(pos.qty)
     return positions
 
 # ================= EXECUTION MODULE =================
-def close_all_positions():
+def close_all_positions() -> None:
     """Liquidate all positions."""
     for pos in api.list_positions():
         side = 'sell' if float(pos.qty) > 0 else 'buy'
@@ -64,14 +65,14 @@ def close_all_positions():
             time_in_force='day'
         )
 
-def allocate_capital():
+def allocate_capital() -> float:
     """Returns per-ticker dollar allocation."""
     account = api.get_account()
     buying_power = float(account.buying_power)
     total_alloc = buying_power * CAPITAL_FRACTION
     return total_alloc / len(TICKERS)
 
-def open_positions(signal):
+def open_positions(signal: int) -> None:
     """
     signal = +1 (long) or -1 (short)
     """
@@ -95,7 +96,7 @@ def open_positions(signal):
         )
 
 # ================= STRATEGY RUNNER =================
-def run_strategy():
+def run_strategy() -> None:
     print(f"[{datetime.now()}] Running strategy...")
 
     signal = get_sp500_signal()
