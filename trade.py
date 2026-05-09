@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import pytz
 import os
 from dotenv import load_dotenv
+import math
 
 # ================= CONFIG =================
 load_dotenv()
@@ -30,14 +31,25 @@ def get_sp500_signal() -> int:
     if len(data) < 2:
         raise ValueError("Not enough data to compute S&P 500 signal")
 
-    yesterday = data.iloc[-2]
-    prev_day = data.iloc[-3]
+    yesterday = data.iloc[-2]["Close"]
+    prev_day = data.iloc[-3]["Close"]
 
-    ret = (yesterday["Close"][SP500_TICKER] - prev_day["Close"][SP500_TICKER]) / prev_day["Close"][SP500_TICKER]
+    return compute_signal_from_closes(prev_day, yesterday, RETURN_THRESHOLD)
 
-    if ret >= RETURN_THRESHOLD:
+
+def compute_signal_from_closes(prev_close: float, yesterday_close: float, threshold: float) -> int:
+    """Pure helper to compute signal from two consecutive close prices and a threshold.
+
+    Returns +1, -1, or 0.
+    """
+    if prev_close == 0 or prev_close is None or yesterday_close is None:
+        return 0
+
+    ret = (yesterday_close - prev_close) / prev_close
+
+    if ret >= threshold:
         return 1
-    elif ret <= -RETURN_THRESHOLD:
+    elif ret <= -threshold:
         return -1
     else:
         return 0
@@ -84,6 +96,45 @@ def compute_desired_positions(signal: int) -> dict[str, int]:
             desired_qty = qty
         elif signal == -1:
             desired_qty = -qty
+
+        desired[ticker] = desired_qty
+
+    return desired
+
+
+def compute_desired_from_prices(per_ticker_allocation: float, signal: int, price_map: dict[str, float]) -> dict[str, int]:
+    """Pure helper: compute desired signed integer quantities for each ticker given per-ticker dollar allocation.
+
+    - per_ticker_allocation: dollars to allocate per ticker
+    - signal: +1 long, -1 short, 0 neutral
+    - price_map: mapping ticker -> execution price (float)
+
+    Returns dict ticker -> desired_qty (int)
+    """
+
+    desired: dict[str, int] = {}
+
+    for ticker, price in price_map.items():
+        # treat None / NaN / non-positive as unavailable -> zero allocation
+        if price is None:
+            qty = 0
+        else:
+            try:
+                p = float(price)
+            except Exception:
+                qty = 0
+            else:
+                if math.isnan(p) or p <= 0:
+                    qty = 0
+                else:
+                    qty = int(per_ticker_allocation // p)
+
+        if signal == 1:
+            desired_qty = qty
+        elif signal == -1:
+            desired_qty = -qty
+        else:
+            desired_qty = 0
 
         desired[ticker] = desired_qty
 
