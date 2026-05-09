@@ -15,7 +15,8 @@ BASE_URL = "https://paper-api.alpaca.markets"
 
 TICKERS = ["SPHY", "SCYB"]
 SP500_TICKER = "^GSPC"
-CAPITAL_FRACTION = 0.9  # use 90% of buying power
+CAPITAL_FRACTION = 0.9  # use 90% of buying power\
+RETURN_THRESHOLD = 0.015 # decminal representation of percent
 TIMEZONE = "US/Eastern"
 
 # ================= API INIT =================
@@ -23,7 +24,7 @@ api = tradeapi.REST(API_KEY, API_SECRET, BASE_URL, api_version='v2')
 
 # ================= DATA MODULE =================
 def get_sp500_signal() -> int:
-    """Returns +1 (bullish) or -1 (bearish) based on yesterday's S&P move."""
+    """Returns +1 (bullish), -1 (bearish), or 0 (neutral) based on yesterday's S&P move and RETURN_THRESHOLD."""
     data = yf.download(SP500_TICKER, period="3d", interval="1d")
 
     if len(data) < 2:
@@ -34,7 +35,12 @@ def get_sp500_signal() -> int:
 
     ret = (yesterday["Close"][SP500_TICKER] - prev_day["Close"][SP500_TICKER]) / prev_day["Close"][SP500_TICKER]
 
-    return 1 if ret > 0 else -1
+    if ret >= RETURN_THRESHOLD:
+        return 1
+    elif ret <= -RETURN_THRESHOLD:
+        return -1
+    else:
+        return 0
 
 # ================= POSITION MODULE =================
 def get_current_positions() -> dict[str, float]:
@@ -73,7 +79,12 @@ def compute_desired_positions(signal: int) -> dict[str, int]:
         else:
             qty = int(allocation / price)
 
-        desired_qty = qty if signal == 1 else -qty
+        desired_qty = 0
+        if signal == 1:
+            desired_qty = qty
+        elif signal == -1:
+            desired_qty = -qty
+
         desired[ticker] = desired_qty
 
     return desired
@@ -182,7 +193,13 @@ def run_strategy() -> None:
     print(f"[{datetime.now()}] Running strategy...")
 
     signal = get_sp500_signal()
-    print(f"Signal: {'LONG' if signal == 1 else 'SHORT'}")
+    if signal == 1:
+        print("Signal: LONG")
+    elif signal == -1:
+        print("Signal: SHORT")
+    else:
+        print(f"Signal: NEUTRAL (change within +/-{RETURN_THRESHOLD:.3f}) - no trades placed")
+        return
 
     current_positions = get_current_positions()
 
