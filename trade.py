@@ -27,7 +27,7 @@ def get_sp500_signal() -> int:
     data = yf.download(SP500_TICKER, period="3d", interval="1d")
 
     if len(data) < 2:
-        raise Exception("Not enough data")
+        raise ValueError("Not enough data to compute S&P 500 signal")
 
     yesterday = data.iloc[-2]
     prev_day = data.iloc[-3]
@@ -52,6 +52,87 @@ def get_current_positions() -> dict[str, float]:
         positions[pos.symbol] = float(pos.qty)
     return positions
 
+
+def compute_desired_positions(signal: int) -> dict[str, int]:
+    """Compute desired signed quantities for each ticker based on signal.
+
+    Returns a mapping of symbol -> desired_qty (int). Positive = long, negative = short.
+    """
+    allocation = allocate_capital()
+    desired: dict[str, int] = {}
+
+    for ticker in TICKERS:
+        try:
+            price = yf.Ticker(ticker).history(period="1d")["Close"].iloc[-1]
+        except Exception as e:
+            print(f"Error fetching price for {ticker}: {e}")
+            price = None
+
+        if not price or price <= 0:
+            qty = 0
+        else:
+            qty = int(allocation / price)
+
+        desired_qty = qty if signal == 1 else -qty
+        desired[ticker] = desired_qty
+
+    return desired
+
+
+def close_unwanted_positions(desired_positions: dict[str, int], current_positions: dict[str, float]) -> None:
+    """Close positions that are held but not desired anymore."""
+    for symbol, curr_qty in current_positions.items():
+        if symbol not in desired_positions:
+            qty_to_close = abs(int(curr_qty))
+            if qty_to_close == 0:
+                continue
+            side = 'sell' if curr_qty > 0 else 'buy'
+            try:
+                api.submit_order(
+                    symbol=symbol,
+                    qty=qty_to_close,
+                    side=side,
+                    type='market',
+                    time_in_force='day'
+                )
+                print(f"Closed out {symbol}: {side} {qty_to_close}")
+            except Exception as e:
+                print(f"Error closing {symbol}: {e}")
+
+
+def adjust_desired_positions(desired_positions: dict[str, int], current_positions: dict[str, float]) -> None:
+    """For tickers in desired_positions, trade only the difference (desired - current)."""
+    for symbol, desired_qty in desired_positions.items():
+        curr_qty = int(current_positions.get(symbol, 0))
+        diff = int(desired_qty) - curr_qty
+
+        if diff == 0:
+            continue
+
+        side = 'buy' if diff > 0 else 'sell'
+        trade_qty = abs(int(diff))
+
+        if trade_qty == 0:
+            continue
+
+        try:
+            api.submit_order(
+                symbol=symbol,
+                qty=trade_qty,
+                side=side,
+                type='market',
+                time_in_force='day'
+            )
+            print(f"Submitted {side} {trade_qty} for {symbol} (desired {desired_qty}, current {curr_qty})")
+        except Exception as e:
+            print(f"Error rebalancing {symbol}: {e}")
+
+
+def rebalance_positions(desired_positions: dict[str, int], current_positions: dict[str, float]) -> None:
+    """Wrapper that closes unwanted positions then adjusts desired ones."""
+    close_unwanted_positions(desired_positions, current_positions)
+    adjust_desired_positions(desired_positions, current_positions)
+
 # ================= EXECUTION MODULE =================
 def close_all_positions() -> None:
     """Liquidate all positions."""
@@ -73,8 +154,9 @@ def allocate_capital() -> float:
     return total_alloc / len(TICKERS)
 
 def open_positions(signal: int) -> None:
-    """
-    signal = +1 (long) or -1 (short)
+    """Open positions for the given signal (+1 long, -1 short).
+
+    Note: kept for backward compatibility but not used by the rebalance runner.
     """
     allocation = allocate_capital()
 
@@ -104,13 +186,10 @@ def run_strategy() -> None:
 
     current_positions = get_current_positions()
 
-    # Determine if we need to flip
-    if current_positions:
-        print("Closing existing positions...")
-        close_all_positions()
-
-    print("Opening new positions...")
-    open_positions(signal)
+    # Compute desired positions and rebalance only the differences to avoid wash trades.
+    desired_positions = compute_desired_positions(signal)
+    print(f"Desired positions: {desired_positions}")
+    rebalance_positions(desired_positions, current_positions)
 
     print("Done.")
 
