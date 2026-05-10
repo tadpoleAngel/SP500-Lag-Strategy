@@ -1,3 +1,4 @@
+import warnings
 import yfinance as yf
 import pandas as pd
 from datetime import datetime
@@ -7,7 +8,7 @@ from typing import Dict, Tuple
 from trade import compute_desired_from_prices, compute_signal_from_closes
 
 # Backtest configuration - can be adjusted when running
-TICKERS = ["GE", "C"]
+TICKERS = ["SPY", "QQQ", "DIA", "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA"]
 SP500_TICKER = "^GSPC"
 INITIAL_CAPITAL = 100000.0
 CAPITAL_FRACTION = 0.9
@@ -142,7 +143,16 @@ def calculate_metrics(df: pd.DataFrame):
         total_return = df['pv'].iloc[-1] / df['pv'].iloc[0] - 1
         days = (df.index[-1] - df.index[0]).days
         years = days / 365.25 if days > 0 else 1
-        cagr = (1 + total_return) ** (1 / years) - 1
+        cagr = float('nan')
+
+        warnings.filterwarnings("error", message="invalid value encountered in scalar power", category=RuntimeWarning)
+        try:
+            cagr = (1 + total_return) ** (1 / years) - 1
+        except RuntimeWarning:
+            print("Hey man, your cagr went negative you're losing a ton of money")
+        finally:
+            warnings.resetwarnings()
+
         ann_vol = returns.std() * (252 ** 0.5)
         sharpe = (returns.mean() / returns.std()) * (252 ** 0.5) if returns.std() > 0 else float('nan')
         # max drawdown
