@@ -250,7 +250,7 @@ def allocate_capital() -> float:
         raise RuntimeError("Alpaca API not configured - cannot allocate capital")
 
     account = api.get_account()
-    buying_power = float(account.buying_power)
+    buying_power = float(account.cash)
     total_alloc = buying_power * CAPITAL_FRACTION
     return total_alloc / len(TICKERS)
 
