@@ -1,4 +1,3 @@
-from dis import Positions
 import alpaca_trade_api as tradeapi
 import yfinance as yf
 from datetime import datetime, timedelta
@@ -16,12 +15,32 @@ BASE_URL = "https://paper-api.alpaca.markets"
 
 TICKERS = ["SPHY", "SCYB"]
 SP500_TICKER = "^GSPC"
-CAPITAL_FRACTION = 0.9  # use 90% of buying power\
-RETURN_THRESHOLD = 0.015 # decminal representation of percent
+CAPITAL_FRACTION = 0.9  # use 90% of buying power
+RETURN_THRESHOLD = 0.015  # decimal representation of percent
 TIMEZONE = "US/Eastern"
 
-# ================= API INIT =================
-api = tradeapi.REST(API_KEY, API_SECRET, BASE_URL, api_version='v2')
+# Alpaca client is created lazily to avoid side-effects at import time
+_api = None
+
+def get_api():
+    """Return a cached Alpaca REST client or None if credentials are not configured.
+
+    This avoids creating the client on import so modules that only need the
+    pure helpers can import `trade` without requiring Alpaca credentials.
+    """
+    global _api
+    if _api is not None:
+        return _api
+
+    if not API_KEY or not API_SECRET:
+        # Credentials not present; caller should handle None
+        return None
+
+    try:
+        _api = tradeapi.REST(API_KEY, API_SECRET, BASE_URL, api_version='v2')
+    except Exception:
+        _api = None
+    return _api
 
 # ================= DATA MODULE =================
 def get_sp500_signal() -> int:
@@ -58,7 +77,10 @@ def compute_signal_from_closes(prev_close: float, yesterday_close: float, thresh
 def get_current_positions() -> dict[str, float]:
     """Returns dict of current positions."""
     positions = {}
-    api_response = {}
+    api = get_api()
+    if api is None:
+        # Running in backtest/local mode - no live API available
+        return positions
 
     try:
         api_response = api.list_positions()
@@ -150,6 +172,10 @@ def close_unwanted_positions(desired_positions: dict[str, int], current_position
                 continue
             side = 'sell' if curr_qty > 0 else 'buy'
             try:
+                api = get_api()
+                if api is None:
+                    print(f"Skipping close of {symbol}: no API configured")
+                    continue
                 api.submit_order(
                     symbol=symbol,
                     qty=qty_to_close,
@@ -178,6 +204,10 @@ def adjust_desired_positions(desired_positions: dict[str, int], current_position
             continue
 
         try:
+            api = get_api()
+            if api is None:
+                print(f"Skipping submit {side} {trade_qty} for {symbol}: no API configured")
+                continue
             api.submit_order(
                 symbol=symbol,
                 qty=trade_qty,
@@ -198,6 +228,11 @@ def rebalance_positions(desired_positions: dict[str, int], current_positions: di
 # ================= EXECUTION MODULE =================
 def close_all_positions() -> None:
     """Liquidate all positions."""
+    api = get_api()
+    if api is None:
+        print("No API configured - skipping close_all_positions")
+        return
+
     for pos in api.list_positions():
         side = 'sell' if float(pos.qty) > 0 else 'buy'
         api.submit_order(
@@ -210,6 +245,10 @@ def close_all_positions() -> None:
 
 def allocate_capital() -> float:
     """Returns per-ticker dollar allocation."""
+    api = get_api()
+    if api is None:
+        raise RuntimeError("Alpaca API not configured - cannot allocate capital")
+
     account = api.get_account()
     buying_power = float(account.buying_power)
     total_alloc = buying_power * CAPITAL_FRACTION
@@ -221,6 +260,11 @@ def open_positions(signal: int) -> None:
     Note: kept for backward compatibility but not used by the rebalance runner.
     """
     allocation = allocate_capital()
+
+    api = get_api()
+    if api is None:
+        print("No API configured - skipping open_positions")
+        return
 
     for ticker in TICKERS:
         price = yf.Ticker(ticker).history(period="1d")["Close"].iloc[-1]
