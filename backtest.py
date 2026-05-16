@@ -107,9 +107,10 @@ def run_backtest(start: str, end: str, return_threshold: float = RETURN_THRESHOL
     cash = initial_capital
     history = []
 
-    # ledger for open lots per ticker: list of tuples (qty_signed, entry_price)
+    # ledger for open lots per ticker: list of tuples (qty_signed, entry_price, entry_date)
     open_lots = {t: [] for t in tickers}
-    # collect closed trade events as tuples (symbol, pnl)
+    # collect closed trade events as detailed dicts per closed chunk
+    # each closed trade: {symbol, qty, entry_price, entry_date, exit_price, exit_date, pnl}
     closed_trade_events = []
     # count of executed trade instructions placed (each execution line is one "trade placed")
     trades_placed_count = 0
@@ -118,8 +119,68 @@ def run_backtest(start: str, end: str, return_threshold: float = RETURN_THRESHOL
         signal = compute_signal(sp, i, return_threshold)
 
         if signal == 0:
+            # On neutral signal, close/rebalance to zero desired quantities so positions are liquidated
+            exec_prices = {t: get_exec_price(data.get(t), date) for t in tickers}
+            desired = {t: 0 for t in tickers}
+
+            cash_delta, trades = execute_trades(positions, desired, exec_prices, tickers)
+            trades_placed_count += len(trades)
+
+            # update ledger & compute closed trade P&L (FIFO) - reuse same logic as below
+            for tr in trades:
+                sym = tr['symbol']
+                qty = tr['qty']  # signed: positive = buy, negative = sell
+                price = tr['price']
+                lots = open_lots.get(sym, [])
+                qty_remaining = qty
+
+                if qty > 0:
+                    j = 0
+                    while qty_remaining > 0 and j < len(lots):
+                        lot_qty, lot_price, lot_date = lots[j]
+                        if lot_qty < 0:
+                            close_qty = min(qty_remaining, -lot_qty)
+                            pnl = close_qty * (lot_price - price)
+                            closed_trade_events.append({'symbol': sym, 'qty': close_qty, 'entry_price': lot_price, 'entry_date': lot_date, 'exit_price': price, 'exit_date': date, 'pnl': pnl})
+                            new_lot_qty = lot_qty + close_qty
+                            if new_lot_qty == 0:
+                                lots.pop(j)
+                            else:
+                                lots[j] = (new_lot_qty, lot_price, lot_date)
+                                j += 1
+                            qty_remaining -= close_qty
+                        else:
+                            j += 1
+                    if qty_remaining > 0:
+                        lots.append((qty_remaining, price, date))
+
+                elif qty < 0:
+                    sell_qty = -qty
+                    j = 0
+                    while sell_qty > 0 and j < len(lots):
+                        lot_qty, lot_price, lot_date = lots[j]
+                        if lot_qty > 0:
+                            close_qty = min(sell_qty, lot_qty)
+                            pnl = close_qty * (price - lot_price)
+                            closed_trade_events.append({'symbol': sym, 'qty': close_qty, 'entry_price': lot_price, 'entry_date': lot_date, 'exit_price': price, 'exit_date': date, 'pnl': pnl})
+                            new_lot_qty = lot_qty - close_qty
+                            if new_lot_qty == 0:
+                                lots.pop(j)
+                            else:
+                                lots[j] = (new_lot_qty, lot_price, lot_date)
+                                j += 1
+                            sell_qty -= close_qty
+                        else:
+                            j += 1
+                    if sell_qty > 0:
+                        lots.append((-sell_qty, price, date))
+
+                open_lots[sym] = lots
+
+            cash += cash_delta
+
             pv = compute_portfolio_value(positions, cash, data, tickers, date)
-            history.append({'date': date, 'signal': 0, 'cash': cash, 'pv': pv, 'positions': positions.copy(), 'trades': []})
+            history.append({'date': date, 'signal': 0, 'cash': cash, 'pv': pv, 'positions': positions.copy(), 'trades': trades})
             continue
 
         total_alloc = cash * CAPITAL_FRACTION
@@ -147,47 +208,63 @@ def run_backtest(start: str, end: str, return_threshold: float = RETURN_THRESHOL
             if qty > 0:
                 j = 0
                 while qty_remaining > 0 and j < len(lots):
-                    lot_qty, lot_price = lots[j]
+                    lot_qty, lot_price, lot_date = lots[j]
                     if lot_qty < 0:  # short lot, can be closed by buying
                         close_qty = min(qty_remaining, -lot_qty)
                         pnl = close_qty * (lot_price - price)  # short entry - buy price
-                        closed_trade_events.append((sym, pnl))
+                        closed_trade_events.append({
+                            'symbol': sym,
+                            'qty': close_qty,
+                            'entry_price': lot_price,
+                            'entry_date': lot_date,
+                            'exit_price': price,
+                            'exit_date': date,
+                            'pnl': pnl,
+                        })
                         # adjust the lot
                         new_lot_qty = lot_qty + close_qty  # less negative
                         if new_lot_qty == 0:
                             lots.pop(j)
                         else:
-                            lots[j] = (new_lot_qty, lot_price)
+                            lots[j] = (new_lot_qty, lot_price, lot_date)
                             j += 1
                         qty_remaining -= close_qty
                     else:
                         j += 1
                 # any remaining becomes a new long lot
                 if qty_remaining > 0:
-                    lots.append((qty_remaining, price))
+                    lots.append((qty_remaining, price, date))
 
             # If selling, first attempt to close existing long lots (positive lots)
             elif qty < 0:
                 sell_qty = -qty
                 j = 0
                 while sell_qty > 0 and j < len(lots):
-                    lot_qty, lot_price = lots[j]
+                    lot_qty, lot_price, lot_date = lots[j]
                     if lot_qty > 0:  # long lot, can be closed by selling
                         close_qty = min(sell_qty, lot_qty)
                         pnl = close_qty * (price - lot_price)  # sell price - long entry
-                        closed_trade_events.append((sym, pnl))
+                        closed_trade_events.append({
+                            'symbol': sym,
+                            'qty': close_qty,
+                            'entry_price': lot_price,
+                            'entry_date': lot_date,
+                            'exit_price': price,
+                            'exit_date': date,
+                            'pnl': pnl,
+                        })
                         new_lot_qty = lot_qty - close_qty
                         if new_lot_qty == 0:
                             lots.pop(j)
                         else:
-                            lots[j] = (new_lot_qty, lot_price)
+                            lots[j] = (new_lot_qty, lot_price, lot_date)
                             j += 1
                         sell_qty -= close_qty
                     else:
                         j += 1
                 # any remaining sold quantity opens a short lot
                 if sell_qty > 0:
-                    lots.append((-sell_qty, price))
+                    lots.append((-sell_qty, price, date))
 
             open_lots[sym] = lots
 
@@ -198,8 +275,29 @@ def run_backtest(start: str, end: str, return_threshold: float = RETURN_THRESHOL
 
     hist_df = pd.DataFrame(history).set_index('date')
     final_value = hist_df['pv'].iloc[-1] if not hist_df.empty else initial_capital
-    # attach simple summary counts to return as well: closed_trade_events contains P&L for each closed chunk
-    return final_value, hist_df, {'closed_events': closed_trade_events, 'placed_count': trades_placed_count}
+
+    # compute realized P&L (sum of closed events) and unrealized P&L from open lots
+    realized_total = sum(t['pnl'] for t in closed_trade_events)
+    unrealized_total = 0.0
+    last_date = dates[-1] if len(dates) > 0 else None
+    if last_date is not None:
+        for sym, lots in open_lots.items():
+            df_sym = data.get(sym)
+            if df_sym is None or last_date not in df_sym.index:
+                continue
+            last_price = df_sym.at[last_date, 'Close'] if 'Close' in df_sym.columns else None
+            if last_price is None or pd.isna(last_price):
+                continue
+            for qty, entry_price, entry_date in lots:
+                unrealized_total += qty * (last_price - entry_price)
+
+    return final_value, hist_df, {
+        'closed_trades': closed_trade_events,
+        'placed_count': trades_placed_count,
+        'realized_pnl': realized_total,
+        'unrealized_pnl': unrealized_total,
+        'open_lots': open_lots,
+    }
 
 
 def calculate_metrics(df: pd.DataFrame, trade_info: dict = None):
@@ -234,12 +332,12 @@ def calculate_metrics(df: pd.DataFrame, trade_info: dict = None):
         pct_loss = float('nan')
 
         if trade_info is not None:
-            closed = trade_info.get('closed_events', [])
+            closed = trade_info.get('closed_trades', [])
             num_trades_placed = trade_info.get('placed_count', 0)
             closed_count = len(closed)
             if closed_count > 0:
-                gains = sum(1 for _, pnl in closed if pnl > 0)
-                losses = sum(1 for _, pnl in closed if pnl < 0)
+                gains = sum(1 for t in closed if t.get('pnl', 0) > 0)
+                losses = sum(1 for t in closed if t.get('pnl', 0) < 0)
                 pct_gain = gains / closed_count * 100.0
                 pct_loss = losses / closed_count * 100.0
 
@@ -259,11 +357,29 @@ def print_metrics(total_return, cagr, ann_vol, sharpe, max_dd, num_trades=0, pct
 
 
 if __name__ == '__main__':
-    start = '2024-05-09'
-    end = datetime.today().strftime('%Y-%m-%d')
-    final, df, trade_info = run_backtest(start, end)
+    start = '2025-12-01'
+    # end = datetime.today().strftime('%Y-%m-%d')
+    end = '2026-02-26'
+    final, df, trade_info = run_backtest(start, end, tickers=['SQQQ', 'SOXS', 'SPXS'], return_threshold=0.0) #0.0255
     print(f'Final portfolio value: ${final:,.2f}')  
+    print(f"Realized P&L: {trade_info.get('realized_pnl', 0):,.2f}")
+    print(f"Unrealized P&L: {trade_info.get('unrealized_pnl', 0):,.2f}")
+    # closed = trade_info.get('closed_trades', [])
+    # if closed:
+    #     print('Closed trades (sample up to 10):')
+    #     for t in closed[:10]:
+    #         print(f"{t['exit_date'].date()} {t['symbol']} qty={t['qty']} entry={t['entry_price']:.2f} exit={t['exit_price']:.2f} pnl={t['pnl']:.2f}")
     print_metrics(*calculate_metrics(df, trade_info))
-    print(df[['signal', 'cash', 'pv']].tail(10))
+    final, df, trade_info = run_backtest(start, end, tickers=['CAT', 'OXY'], return_threshold=0.0) #0.0520
+    print(f'Final portfolio value: ${final:,.2f}')  
+    print(f"Realized P&L: {trade_info.get('realized_pnl', 0):,.2f}")
+    print(f"Unrealized P&L: {trade_info.get('unrealized_pnl', 0):,.2f}")
+    # closed = trade_info.get('closed_trades', [])
+    # if closed:
+    #     print('Closed trades (sample up to 10):')
+    #     for t in closed[:10]:
+    #         print(f"{t['exit_date'].date()} {t['symbol']} qty={t['qty']} entry={t['entry_price']:.2f} exit={t['exit_price']:.2f} pnl={t['pnl']:.2f}")
+    print_metrics(*calculate_metrics(df, trade_info))
+    # print(df[['signal', 'cash', 'pv']].tail(10))
 
 

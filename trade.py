@@ -293,7 +293,13 @@ def run_strategy() -> None:
     elif signal == -1:
         print("Signal: SHORT")
     else:
-        print(f"Signal: NEUTRAL (change within +/-{RETURN_THRESHOLD:.3f}) - no trades placed")
+        print(f"Signal: NEUTRAL (change within +/-{RETURN_THRESHOLD:.3f}) - closing positions")
+        # Close / rebalance to zero positions on neutral signal
+        current_positions = get_current_positions()
+        desired_positions = {t: 0 for t in TICKERS}
+        print("Rebalancing to zero positions due to neutral signal")
+        rebalance_positions(desired_positions, current_positions)
+        print("Done.")
         return
 
     current_positions = get_current_positions()
