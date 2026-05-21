@@ -4,19 +4,23 @@ import pandas as pd
 from datetime import datetime
 from math import floor
 from typing import Dict, Tuple
+import matplotlib.pyplot as plt
 
 from trade import compute_desired_from_prices, compute_signal_from_closes
 
 # Backtest configuration - can be adjusted when running
 # TICKERS = ["SPY", "QQQ", "DIA", "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA"]
 SP500_TICKER = "^GSPC"
+VIX_TICKER = "^VIX"
 INITIAL_CAPITAL = 100000.0
 CAPITAL_FRACTION = 0.9
 RETURN_THRESHOLD = 0.05
 
 
-def download_data(tickers, start: str, end: str) -> Dict[str, pd.DataFrame]:
-    all_tickers = tickers + [SP500_TICKER]
+def download_data(tickers, start: str, end: str, include_vix: bool = False) -> Dict[str, pd.DataFrame]:
+    all_tickers = list(dict.fromkeys(tickers + [SP500_TICKER]))
+    if include_vix:
+        all_tickers = list(dict.fromkeys(all_tickers + [VIX_TICKER]))
     df = yf.download(all_tickers, start=start, end=end, group_by='ticker', progress=False)
 
     result = {}
@@ -41,6 +45,33 @@ def compute_signal(sp_df: pd.DataFrame, idx: int, threshold: float) -> int:
         return 0
 
     return compute_signal_from_closes(prev_close, yesterday_close, threshold)
+
+
+def compute_vix_scaled_threshold(
+    vix_df: pd.DataFrame | None,
+    idx: int,
+    base_threshold: float,
+    vix_scale: float = 0.0,
+    lookback: int = 252,
+) -> tuple[float, float | None, float | None]:
+    if vix_scale == 0 or vix_df is None or idx < 2 or 'Close' not in vix_df.columns:
+        return base_threshold, None, None
+
+    yesterday_vix = vix_df['Close'].iat[idx - 1] if idx - 1 < len(vix_df) else None
+    window_start = max(0, idx - lookback)
+    vix_median = vix_df['Close'].iloc[window_start:idx].median()
+
+    if (
+        yesterday_vix is None
+        or pd.isna(yesterday_vix)
+        or pd.isna(vix_median)
+        or vix_median <= 0
+    ):
+        return base_threshold, None, None
+
+    vix_ratio = float(yesterday_vix) / float(vix_median)
+    scaled_threshold = base_threshold * (1 + vix_scale * (vix_ratio - 1))
+    return max(0.0, scaled_threshold), float(yesterday_vix), float(vix_ratio)
 
 
 def get_exec_price(df: pd.DataFrame, date) -> float | None:
@@ -90,17 +121,35 @@ def compute_portfolio_value(positions: Dict[str, int], cash: float, data: Dict[s
     return pv
 
 
-def run_backtest(start: str, end: str, return_threshold: float = RETURN_THRESHOLD, tickers: list[str] = None, data: Dict[str, pd.DataFrame] = None, initial_capital: float = INITIAL_CAPITAL) -> Tuple[float, pd.DataFrame, list]:
+
+def run_backtest(
+    start: str,
+    end: str,
+    return_threshold: float = RETURN_THRESHOLD,
+    tickers: list[str] = None,
+    data: Dict[str, pd.DataFrame] = None,
+    initial_capital: float = INITIAL_CAPITAL,
+    plot: bool = False,
+    vix_threshold_scale: float = 0.0,
+    vix_lookback: int = 252,
+) -> Tuple[float, pd.DataFrame, list]:
     if tickers is None:
         tickers = ["SPHY", "SCYB"]
 
     if data is None:
-        data = download_data(tickers, start, end)
+        data = download_data(tickers, start, end, include_vix=vix_threshold_scale != 0)
     # reuse SP500 data from the provided `data` dict when available to avoid re-downloading
     if SP500_TICKER in data and data.get(SP500_TICKER) is not None:
         sp = data[SP500_TICKER]
     else:
         sp = download_data([SP500_TICKER], start, end)[SP500_TICKER]
+    if vix_threshold_scale != 0:
+        if VIX_TICKER in data and data.get(VIX_TICKER) is not None:
+            vix = data[VIX_TICKER].reindex(sp.index)
+        else:
+            vix = download_data([VIX_TICKER], start, end)[VIX_TICKER].reindex(sp.index)
+    else:
+        vix = None
 
     dates = sp.index
     positions = dict.fromkeys(tickers, 0)
@@ -116,7 +165,14 @@ def run_backtest(start: str, end: str, return_threshold: float = RETURN_THRESHOL
     trades_placed_count = 0
 
     for i, date in enumerate(dates):
-        signal = compute_signal(sp, i, return_threshold)
+        effective_threshold, vix_close, vix_ratio = compute_vix_scaled_threshold(
+            vix,
+            i,
+            return_threshold,
+            vix_threshold_scale,
+            vix_lookback,
+        )
+        signal = compute_signal(sp, i, effective_threshold)
 
         if signal == 0:
             # On neutral signal, close/rebalance to zero desired quantities so positions are liquidated
@@ -180,7 +236,7 @@ def run_backtest(start: str, end: str, return_threshold: float = RETURN_THRESHOL
             cash += cash_delta
 
             pv = compute_portfolio_value(positions, cash, data, tickers, date)
-            history.append({'date': date, 'signal': 0, 'cash': cash, 'pv': pv, 'positions': positions.copy(), 'trades': trades})
+            history.append({'date': date, 'signal': 0, 'cash': cash, 'pv': pv, 'positions': positions.copy(), 'trades': trades, 'threshold': effective_threshold, 'vix_close': vix_close, 'vix_ratio': vix_ratio})
             continue
 
         total_alloc = cash * CAPITAL_FRACTION
@@ -271,7 +327,7 @@ def run_backtest(start: str, end: str, return_threshold: float = RETURN_THRESHOL
         cash += cash_delta
 
         pv = compute_portfolio_value(positions, cash, data, tickers, date)
-        history.append({'date': date, 'signal': signal, 'cash': cash, 'pv': pv, 'positions': positions.copy(), 'trades': trades})
+        history.append({'date': date, 'signal': signal, 'cash': cash, 'pv': pv, 'positions': positions.copy(), 'trades': trades, 'threshold': effective_threshold, 'vix_close': vix_close, 'vix_ratio': vix_ratio})
 
     hist_df = pd.DataFrame(history).set_index('date')
     final_value = hist_df['pv'].iloc[-1] if not hist_df.empty else initial_capital
@@ -290,6 +346,15 @@ def run_backtest(start: str, end: str, return_threshold: float = RETURN_THRESHOL
                 continue
             for qty, entry_price, entry_date in lots:
                 unrealized_total += qty * (last_price - entry_price)
+
+    # Plot portfolio value if requested
+    if plot:
+        hist_df['pv'].plot(title='Portfolio Value Over Time')
+        plt.xlabel('Date')
+        plt.ylabel('Portfolio Value ($)')
+        plt.tight_layout()
+        plt.savefig(f"plots/{tickers} portfolio.png")
+        plt.close()
 
     return final_value, hist_df, {
         'closed_trades': closed_trade_events,
@@ -342,6 +407,8 @@ def calculate_metrics(df: pd.DataFrame, trade_info: dict = None):
                 pct_loss = losses / closed_count * 100.0
 
         return total_return, cagr, ann_vol, sharpe, max_dd, num_trades_placed, pct_gain, pct_loss
+    warnings.warn("DataFrame is empty after dropping NA, cannot compute metrics", UserWarning)
+    return (float('nan'),) * 5 + (0, float('nan'), float('nan'))
 
 def print_metrics(total_return, cagr, ann_vol, sharpe, max_dd, num_trades=0, pct_gain=float('nan'), pct_loss=float('nan')):
     print(f'Total return: {total_return:.2%}')
@@ -357,10 +424,9 @@ def print_metrics(total_return, cagr, ann_vol, sharpe, max_dd, num_trades=0, pct
 
 
 if __name__ == '__main__':
-    start = '2025-12-01'
-    # end = datetime.today().strftime('%Y-%m-%d')
-    end = '2026-02-26'
-    final, df, trade_info = run_backtest(start, end, tickers=['SQQQ', 'SOXS', 'SPXS'], return_threshold=0.0) #0.0255
+    start = '2025-06-01'
+    end = datetime.today().strftime('%Y-%m-%d')
+    final, df, trade_info = run_backtest(start, end, tickers=['SQQQ', 'SOXS', 'SPXS'], return_threshold=0.0255, plot=True) #0.0255
     print(f'Final portfolio value: ${final:,.2f}')  
     print(f"Realized P&L: {trade_info.get('realized_pnl', 0):,.2f}")
     print(f"Unrealized P&L: {trade_info.get('unrealized_pnl', 0):,.2f}")
@@ -370,7 +436,7 @@ if __name__ == '__main__':
     #     for t in closed[:10]:
     #         print(f"{t['exit_date'].date()} {t['symbol']} qty={t['qty']} entry={t['entry_price']:.2f} exit={t['exit_price']:.2f} pnl={t['pnl']:.2f}")
     print_metrics(*calculate_metrics(df, trade_info))
-    final, df, trade_info = run_backtest(start, end, tickers=['CAT', 'OXY'], return_threshold=0.0) #0.0520
+    final, df, trade_info = run_backtest(start, end, tickers=['CAT', 'OXY'], return_threshold=0.0520, plot=True) #0.0520
     print(f'Final portfolio value: ${final:,.2f}')  
     print(f"Realized P&L: {trade_info.get('realized_pnl', 0):,.2f}")
     print(f"Unrealized P&L: {trade_info.get('unrealized_pnl', 0):,.2f}")

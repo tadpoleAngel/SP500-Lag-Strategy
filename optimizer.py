@@ -1,5 +1,5 @@
 from datetime import datetime
-from backtest import run_backtest, calculate_metrics, print_metrics
+from backtest import run_backtest, calculate_metrics, print_metrics, download_data, SP500_TICKER, VIX_TICKER
 import warnings
 import os
 import math
@@ -63,7 +63,7 @@ if __name__ == "__main__":
         'max_dd': []
     }
 
-    start = '2020-01-01'
+    start = '2025-01-01'
     end = datetime.today().strftime('%Y-%m-%d')
 
     plots_root = os.path.join(os.path.dirname(__file__), 'plots')
@@ -127,6 +127,45 @@ if __name__ == "__main__":
         plt.close()
         print(f"Saved combined plot: {path}")
 
+    def save_heatmap(x_vals, y_vals, matrix, xlabel, ylabel, title, path, fmt='.2f'):
+        fig, ax = plt.subplots(figsize=(12, 6))
+        im = ax.imshow(matrix, aspect='auto', origin='lower', cmap='viridis')
+        cbar = fig.colorbar(im, ax=ax)
+        cbar.ax.set_ylabel(title)
+
+        x_step = max(1, len(x_vals) // 12)
+        x_ticks = list(range(0, len(x_vals), x_step))
+        ax.set_xticks(x_ticks)
+        ax.set_xticklabels([f"{x_vals[i]:.4f}" for i in x_ticks], rotation=45, ha='right')
+        ax.set_yticks(range(len(y_vals)))
+        ax.set_yticklabels([f"{y:.2f}" for y in y_vals])
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
+
+        finite_vals = [
+            (row_idx, col_idx, val)
+            for row_idx, row in enumerate(matrix)
+            for col_idx, val in enumerate(row)
+            if not math.isnan(val)
+        ]
+        if finite_vals:
+            best_row, best_col, best_val = max(finite_vals, key=lambda item: item[2])
+            ax.scatter([best_col], [best_row], marker='x', color='red', s=80)
+            ax.annotate(
+                format(best_val, fmt),
+                xy=(best_col, best_row),
+                xytext=(6, 6),
+                textcoords='offset points',
+                color='white',
+                weight='bold',
+            )
+
+        plt.tight_layout()
+        plt.savefig(path)
+        plt.close()
+        print(f"Saved heatmap: {path}")
+
     # per-ticker sweep
     # Attempt to load a single cache file that contains previously downloaded data.
     cache = {}
@@ -169,6 +208,32 @@ if __name__ == "__main__":
         ann_vol_list = []
         sharpe_list = []
         max_dd_list = []
+        vix_scales = [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5]
+
+        def _get_data_arg():
+            cache_key = (start, end, (ticker,))
+            range_global_key = (start, end, 'global')
+            if cache_key in cache:
+                return cache[cache_key]
+            if range_global_key in cache:
+                return cache[range_global_key]
+            return cache.get('global_union')
+
+        def _ensure_vix_cached():
+            cache_key = (start, end, (ticker,))
+            data_arg = _get_data_arg()
+            if data_arg is not None and VIX_TICKER in data_arg:
+                return data_arg
+
+            full_data = download_data([ticker], start, end, include_vix=True)
+            cache[cache_key] = full_data
+            union = cache.get('global_union', {})
+            for k, df_k in full_data.items():
+                union[k] = df_k
+            cache['global_union'] = union
+            with open(CACHE_FILE, 'wb') as f:
+                pickle.dump(cache, f)
+            return full_data
 
         for i in range(100):
             threshold = 0.0005 * i + 0.02
@@ -198,12 +263,8 @@ if __name__ == "__main__":
                     # store the data dict returned by run_backtest's internal download step by invoking
                     # download once separately to capture all tickers + SP500. This keeps cache simple.
                     try:
-                        # on first use, create a global cache with the ticker data and S&P
-                        from backtest import download_data, SP500_TICKER
-                        # download ticker data and SP500 for the requested range
-                        full_data = download_data([ticker], start, end)
-                        sp = download_data([SP500_TICKER], start, end)[SP500_TICKER]
-                        full_data[SP500_TICKER] = sp
+                        # on first use, create a global cache with the ticker data, S&P, and VIX
+                        full_data = download_data([ticker], start, end, include_vix=True)
                         # save the per-ticker, range-keyed cache
                         cache[cache_key] = full_data
                         # also save a range-keyed global snapshot for this date-range
@@ -254,12 +315,58 @@ if __name__ == "__main__":
             sharpe_list.append(sharpe)
             max_dd_list.append(max_dd)
 
+        vix_total_return_matrix = []
+        vix_sharpe_matrix = []
+        vix_dd_matrix = []
+        vix_trades_matrix = []
+        best_vix_sharpe = float('-inf')
+        best_vix_threshold = 0.0
+        best_vix_scale = 0.0
+        best_vix_trades = 0
+        vix_data_arg = _ensure_vix_cached()
+
+        for vix_scale in vix_scales:
+            row_returns = []
+            row_sharpe = []
+            row_dd = []
+            row_trades = []
+
+            for threshold in thresholds_list:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    final, df, trade_info = run_backtest(
+                        start,
+                        end,
+                        return_threshold=threshold,
+                        tickers=[ticker],
+                        data=vix_data_arg,
+                        vix_threshold_scale=vix_scale,
+                    )
+
+                total_return, cagr, ann_vol, sharpe, max_dd, num_trades, pct_gain, pct_loss = calculate_metrics(df, trade_info)
+                row_returns.append(total_return)
+                row_sharpe.append(sharpe)
+                row_dd.append(max_dd)
+                row_trades.append(num_trades)
+
+                if not math.isnan(sharpe) and sharpe > best_vix_sharpe:
+                    best_vix_sharpe = sharpe
+                    best_vix_threshold = threshold
+                    best_vix_scale = vix_scale
+                    best_vix_trades = num_trades
+
+            vix_total_return_matrix.append(row_returns)
+            vix_sharpe_matrix.append(row_sharpe)
+            vix_dd_matrix.append(row_dd)
+            vix_trades_matrix.append(row_trades)
+
         # print per-ticker bests
         print(f"Highest total return for {ticker}: {highest_return:.2%} at threshold {highest_return_threshold:.4f}")
         print(f"Highest CAGR for {ticker}: {highest_cagr:.2%} at threshold {highest_cagr_threshold:.4f}")
         print(f"Lowest annual volatility for {ticker}: {lowest_annual_vol:.2%} at threshold {lowest_annual_vol_threshold:.4f}")
         print(f"Highest Sharpe for {ticker}: {highest_sharpe:.2f} at threshold {highest_sharpe_threshold:.4f}")
         print(f"Lowest Max Drawdown for {ticker}: {lowest_dd:.2%} at threshold {lowest_dd_threshold:.4f}")
+        print(f"Highest VIX-scaled Sharpe for {ticker}: {best_vix_sharpe:.2f} at threshold {best_vix_threshold:.4f}, VIX scale {best_vix_scale:.2f}, trades {best_vix_trades}")
 
         # prepare highlight info strings that include number of trades and percent gains
         def _info(trades, pct):
@@ -284,6 +391,11 @@ if __name__ == "__main__":
 
         save_combined_plot(thresholds_list, total_returns, cagr_list, ann_vol_list, sharpe_list, max_dd_list, os.path.join(ticker_dir, 'combined_metrics_vs_threshold.png'),
                            h_return=highest_return_threshold, h_cagr=highest_cagr_threshold, h_vol=lowest_annual_vol_threshold, h_sharpe=highest_sharpe_threshold, h_dd=lowest_dd_threshold)
+
+        save_heatmap(thresholds_list, vix_scales, vix_total_return_matrix, 'Base Threshold', 'VIX Scale', f'{ticker} Total Return: Threshold x VIX Scale', os.path.join(ticker_dir, 'vix_grid_total_return.png'), fmt='.2%')
+        save_heatmap(thresholds_list, vix_scales, vix_sharpe_matrix, 'Base Threshold', 'VIX Scale', f'{ticker} Sharpe: Threshold x VIX Scale', os.path.join(ticker_dir, 'vix_grid_sharpe.png'), fmt='.2f')
+        save_heatmap(thresholds_list, vix_scales, vix_dd_matrix, 'Base Threshold', 'VIX Scale', f'{ticker} Max Drawdown: Threshold x VIX Scale', os.path.join(ticker_dir, 'vix_grid_max_dd.png'), fmt='.2%')
+        save_heatmap(thresholds_list, vix_scales, vix_trades_matrix, 'Base Threshold', 'VIX Scale', f'{ticker} Trades: Threshold x VIX Scale', os.path.join(ticker_dir, 'vix_grid_trades.png'), fmt='.0f')
 
         # collect for overall top performers
         overall_stats['total_return'].append((ticker, highest_return, highest_return_threshold, highest_return_trades, highest_return_pct_gain))
