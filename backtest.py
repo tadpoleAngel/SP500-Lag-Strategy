@@ -1,4 +1,6 @@
 import warnings
+import logging
+logging.basicConfig(level=logging.WARNING, format='%(levelname)s: %(message)s')
 import yfinance as yf
 import pandas as pd
 from datetime import datetime
@@ -177,7 +179,7 @@ def run_backtest(
         if signal == 0:
             # On neutral signal, close/rebalance to zero desired quantities so positions are liquidated
             exec_prices = {t: get_exec_price(data.get(t), date) for t in tickers}
-            desired = {t: 0 for t in tickers}
+            desired = dict.fromkeys(tickers, 0)
 
             cash_delta, trades = execute_trades(positions, desired, exec_prices, tickers)
             trades_placed_count += len(trades)
@@ -367,7 +369,7 @@ def run_backtest(
 
 def calculate_metrics(df: pd.DataFrame, trade_info: dict = None):
     # compute simple performance metrics
-    df = df.dropna()
+    df = df.dropna(axis=1)
     if not df.empty:
         returns = df['pv'].pct_change().dropna()
         total_return = df['pv'].iloc[-1] / df['pv'].iloc[0] - 1
@@ -430,21 +432,11 @@ if __name__ == '__main__':
     print(f'Final portfolio value: ${final:,.2f}')  
     print(f"Realized P&L: {trade_info.get('realized_pnl', 0):,.2f}")
     print(f"Unrealized P&L: {trade_info.get('unrealized_pnl', 0):,.2f}")
-    # closed = trade_info.get('closed_trades', [])
-    # if closed:
-    #     print('Closed trades (sample up to 10):')
-    #     for t in closed[:10]:
-    #         print(f"{t['exit_date'].date()} {t['symbol']} qty={t['qty']} entry={t['entry_price']:.2f} exit={t['exit_price']:.2f} pnl={t['pnl']:.2f}")
     print_metrics(*calculate_metrics(df, trade_info))
     final, df, trade_info = run_backtest(start, end, tickers=['CAT', 'OXY'], return_threshold=0.0520, plot=True) #0.0520
     print(f'Final portfolio value: ${final:,.2f}')  
     print(f"Realized P&L: {trade_info.get('realized_pnl', 0):,.2f}")
     print(f"Unrealized P&L: {trade_info.get('unrealized_pnl', 0):,.2f}")
-    # closed = trade_info.get('closed_trades', [])
-    # if closed:
-    #     print('Closed trades (sample up to 10):')
-    #     for t in closed[:10]:
-    #         print(f"{t['exit_date'].date()} {t['symbol']} qty={t['qty']} entry={t['entry_price']:.2f} exit={t['exit_price']:.2f} pnl={t['pnl']:.2f}")
     print_metrics(*calculate_metrics(df, trade_info))
     # print(df[['signal', 'cash', 'pv']].tail(10))
 

@@ -12,6 +12,9 @@ CACHE_DIR = os.path.join(os.path.dirname(__file__), 'cache')
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_FILE = os.path.join(CACHE_DIR, 'data_cache.pkl')
 
+VIX_SCALES = [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5]
+
+# TICKERS = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'COIN', 'BRK-B', 'SOXS', 'JNJ']
 # TICKERS = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA', 'BRK-B', 'JPM', 'JNJ', 'SPHY', 'SCYB']
 TICKERS = [
     # Mega Cap Tech / High Beta
@@ -63,7 +66,7 @@ if __name__ == "__main__":
         'max_dd': []
     }
 
-    start = '2025-01-01'
+    start = '2008-01-01'
     end = datetime.today().strftime('%Y-%m-%d')
 
     plots_root = os.path.join(os.path.dirname(__file__), 'plots')
@@ -208,7 +211,6 @@ if __name__ == "__main__":
         ann_vol_list = []
         sharpe_list = []
         max_dd_list = []
-        vix_scales = [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5]
 
         def _get_data_arg():
             cache_key = (start, end, (ticker,))
@@ -235,8 +237,8 @@ if __name__ == "__main__":
                 pickle.dump(cache, f)
             return full_data
 
-        for i in range(100):
-            threshold = 0.0005 * i + 0.02
+        for i in range(-20, 100):
+            threshold = 0.001 * i
 
             df = None
             with warnings.catch_warnings():
@@ -325,7 +327,7 @@ if __name__ == "__main__":
         best_vix_trades = 0
         vix_data_arg = _ensure_vix_cached()
 
-        for vix_scale in vix_scales:
+        for vix_scale in VIX_SCALES:
             row_returns = []
             row_sharpe = []
             row_dd = []
@@ -392,10 +394,10 @@ if __name__ == "__main__":
         save_combined_plot(thresholds_list, total_returns, cagr_list, ann_vol_list, sharpe_list, max_dd_list, os.path.join(ticker_dir, 'combined_metrics_vs_threshold.png'),
                            h_return=highest_return_threshold, h_cagr=highest_cagr_threshold, h_vol=lowest_annual_vol_threshold, h_sharpe=highest_sharpe_threshold, h_dd=lowest_dd_threshold)
 
-        save_heatmap(thresholds_list, vix_scales, vix_total_return_matrix, 'Base Threshold', 'VIX Scale', f'{ticker} Total Return: Threshold x VIX Scale', os.path.join(ticker_dir, 'vix_grid_total_return.png'), fmt='.2%')
-        save_heatmap(thresholds_list, vix_scales, vix_sharpe_matrix, 'Base Threshold', 'VIX Scale', f'{ticker} Sharpe: Threshold x VIX Scale', os.path.join(ticker_dir, 'vix_grid_sharpe.png'), fmt='.2f')
-        save_heatmap(thresholds_list, vix_scales, vix_dd_matrix, 'Base Threshold', 'VIX Scale', f'{ticker} Max Drawdown: Threshold x VIX Scale', os.path.join(ticker_dir, 'vix_grid_max_dd.png'), fmt='.2%')
-        save_heatmap(thresholds_list, vix_scales, vix_trades_matrix, 'Base Threshold', 'VIX Scale', f'{ticker} Trades: Threshold x VIX Scale', os.path.join(ticker_dir, 'vix_grid_trades.png'), fmt='.0f')
+        save_heatmap(thresholds_list, VIX_SCALES, vix_total_return_matrix, 'Base Threshold', 'VIX Scale', f'{ticker} Total Return: Threshold x VIX Scale', os.path.join(ticker_dir, 'vix_grid_total_return.png'), fmt='.2%')
+        save_heatmap(thresholds_list, VIX_SCALES, vix_sharpe_matrix, 'Base Threshold', 'VIX Scale', f'{ticker} Sharpe: Threshold x VIX Scale', os.path.join(ticker_dir, 'vix_grid_sharpe.png'), fmt='.2f')
+        save_heatmap(thresholds_list, VIX_SCALES, vix_dd_matrix, 'Base Threshold', 'VIX Scale', f'{ticker} Max Drawdown: Threshold x VIX Scale', os.path.join(ticker_dir, 'vix_grid_max_dd.png'), fmt='.2%')
+        save_heatmap(thresholds_list, VIX_SCALES, vix_trades_matrix, 'Base Threshold', 'VIX Scale', f'{ticker} Trades: Threshold x VIX Scale', os.path.join(ticker_dir, 'vix_grid_trades.png'), fmt='.0f')
 
         # collect for overall top performers
         overall_stats['total_return'].append((ticker, highest_return, highest_return_threshold, highest_return_trades, highest_return_pct_gain))
