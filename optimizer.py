@@ -11,7 +11,7 @@ import argparse
 
 parser = argparse.ArgumentParser(description='Optimize S&P 500 return threshold and VIX scale for backtesting strategy across multiple tickers.')
 
-parser.add_argument('--cache', type=bool, default=True, help='Whether to use caching for downloaded data (default: True)')
+parser.add_argument('--cache', action=argparse.BooleanOptionalAction, default=True, help='Whether to use caching for downloaded data (default: True)')
 
 args = parser.parse_args()
 
@@ -178,8 +178,8 @@ if __name__ == "__main__":
 
     # per-ticker sweep
     # Attempt to load a single cache file that contains previously downloaded data.
+    cache = {}
     if args.cache:
-        cache = {}
         if os.path.exists(CACHE_FILE):
             try:
                 with open(CACHE_FILE, 'rb') as f:
