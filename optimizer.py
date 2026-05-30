@@ -15,9 +15,10 @@ parser.add_argument('--cache', action=argparse.BooleanOptionalAction, default=Tr
 
 args = parser.parse_args()
 
-CACHE_DIR = os.path.join(os.path.dirname(__file__), 'cache')
-os.makedirs(CACHE_DIR, exist_ok=True)
-CACHE_FILE = os.path.join(CACHE_DIR, 'data_cache.pkl')
+if args.cache:
+    CACHE_DIR = os.path.join(os.path.dirname(__file__), 'cache')
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    CACHE_FILE = os.path.join(CACHE_DIR, 'data_cache.pkl')
 
 VIX_SCALES = [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5]
 
