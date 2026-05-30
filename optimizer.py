@@ -7,6 +7,13 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import pickle
+import argparse
+
+parser = argparse.ArgumentParser(description='Optimize S&P 500 return threshold and VIX scale for backtesting strategy across multiple tickers.')
+
+parser.add_argument('--cache', type=bool, default=True, help='Whether to use caching for downloaded data (default: True)')
+
+args = parser.parse_args()
 
 CACHE_DIR = os.path.join(os.path.dirname(__file__), 'cache')
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -171,14 +178,15 @@ if __name__ == "__main__":
 
     # per-ticker sweep
     # Attempt to load a single cache file that contains previously downloaded data.
-    cache = {}
-    if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE, 'rb') as f:
-                cache = pickle.load(f)
-                print(f"Loaded cache from {CACHE_FILE}")
-        except Exception as e:
-            print(f"Failed to load cache: {e}")
+    if args.cache:
+        cache = {}
+        if os.path.exists(CACHE_FILE):
+            try:
+                with open(CACHE_FILE, 'rb') as f:
+                    cache = pickle.load(f)
+                    print(f"Loaded cache from {CACHE_FILE}")
+            except Exception as e:
+                print(f"Failed to load cache: {e}")
 
     for ticker in TICKERS:
         print(f"\nOptimizing ticker: {ticker}")
@@ -233,8 +241,9 @@ if __name__ == "__main__":
             for k, df_k in full_data.items():
                 union[k] = df_k
             cache['global_union'] = union
-            with open(CACHE_FILE, 'wb') as f:
-                pickle.dump(cache, f)
+            if args.cache:
+                with open(CACHE_FILE, 'wb') as f:
+                    pickle.dump(cache, f)
             return full_data
 
         for i in range(-20, 100):
@@ -276,9 +285,10 @@ if __name__ == "__main__":
                         for k, df_k in full_data.items():
                             union[k] = df_k
                         cache['global_union'] = union
-                        with open(CACHE_FILE, 'wb') as f:
-                            pickle.dump(cache, f)
-                        print(f"Saved data to cache: {CACHE_FILE}")
+                        if args.cache:
+                            with open(CACHE_FILE, 'wb') as f:
+                                pickle.dump(cache, f)
+                            print(f"Saved data to cache: {CACHE_FILE}")
                     except Exception as e:
                         print(f"Failed to build/save cache: {e}")
 

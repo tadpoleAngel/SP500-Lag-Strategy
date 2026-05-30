@@ -4,3 +4,4 @@ datetime
 yfinance
 dotenv
 matplotlib
+argparse
